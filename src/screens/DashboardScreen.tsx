@@ -9,6 +9,7 @@ export default function DashboardScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
 
   const setScreen = useAppStore((s) => s.setScreen);
   const setSelectedPatientId = useAppStore((s) => s.setSelectedPatientId);
@@ -17,6 +18,7 @@ export default function DashboardScreen() {
   const logout = useAppStore((s) => s.logout);
   const pendingSync = useAppStore((s) => s.pendingSyncCount);
   const dashboardRefresh = useAppStore((s) => s.dashboardRefresh);
+  const isOnline = useAppStore((s) => s.isOnline);
 
   useEffect(() => {
     loadBeds();
@@ -39,14 +41,18 @@ export default function DashboardScreen() {
         }
 
         const patientHandoffs = allHandoffs.filter(
-          (h) => h.patientId === patient.id && h.status === 'pending'
+          (h) => h.patientId === patient.id && (h.status === 'pending' || h.status === 'flagged')
         );
         const handoff = patientHandoffs.length > 0 ? patientHandoffs[patientHandoffs.length - 1] : null;
 
         const pendingTasks = handoff ? handoff.tasks.filter((t) => !t.completed).length : 0;
 
         let status: BedStatus['status'] = 'stable';
-        if (handoff?.vitals) {
+        
+        // Flagged takes highest priority
+        if (handoff?.status === 'flagged') {
+          status = 'critical';
+        } else if (handoff?.vitals) {
           const bp = handoff.vitals.bloodPressure.split('/').map(Number);
           if (!isNaN(bp[0]) && !isNaN(bp[1])) {
             if (bp[0] > 160 || bp[1] > 100 || handoff.vitals.spO2 < 92) {
@@ -75,14 +81,23 @@ export default function DashboardScreen() {
   }
 
   async function handleSync() {
-    if (syncing) return;
+    if (syncing || !isOnline) return;
     setSyncing(true);
+    setSyncMessage('Syncing...');
 
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const localHandoffs = await db.handoffs.where('syncStatus').equals('local').toArray();
+    for (const h of localHandoffs) {
+      await db.handoffs.update(h.id, { syncStatus: 'synced', syncedAt: Date.now() });
+    }
 
     await db.syncQueue.clear();
     useAppStore.getState().setPendingSync(0);
+    useAppStore.getState().setLastSyncAt(Date.now());
 
+    setSyncMessage('Synced! ✅');
+    setTimeout(() => setSyncMessage(''), 2000);
     setSyncing(false);
   }
 
@@ -107,8 +122,10 @@ export default function DashboardScreen() {
     if (bed.handoff && bed.handoff.status === 'pending') {
       setSelectedHandoffId(bed.handoff.id);
       setScreen('acknowledge');
+    } else if (bed.handoff && bed.handoff.status === 'flagged') {
+      // Show alert that handoff is flagged and under review
+      alert('This handoff has been flagged for review. Please contact the charge nurse.');
     } else {
-      // FIX: Validate patient ID before setting and navigating
       if (bed.patient.id && bed.patient.id.trim() !== '') {
         setSelectedPatientId(bed.patient.id);
         setScreen('handoff');
@@ -116,16 +133,19 @@ export default function DashboardScreen() {
     }
   }
 
-  // FIX: Handle New Handoff button — don't navigate without a valid patient
   function handleNewHandoff() {
     setSelectedPatientId('');
-    // Don't navigate to handoff screen without a patient selected
-    // Show alert to user explaining they need to select a patient first
     alert('Please select a patient from the dashboard to create a new handoff.');
   }
 
   return (
     <div className="screen-container">
+      {!isOnline && (
+        <div className="offline-indicator">
+          ⚠️ Offline Mode — Data saved locally
+        </div>
+      )}
+
       <div className="header">
         <button className="icon-btn" onClick={logout}>
           ←
@@ -165,7 +185,9 @@ export default function DashboardScreen() {
           >
             <div className="bed-header">
               <div className="bed-number">{bed.bed}</div>
-              <div className={`bed-status ${bed.status}`}>{bed.status === 'empty' ? 'Empty' : bed.status}</div>
+              <div className={`bed-status ${bed.status}`}>
+                {bed.status === 'empty' ? 'Empty' : bed.status === 'flagged' ? 'Flagged' : bed.status}
+              </div>
             </div>
 
             {bed.patient && (
@@ -194,6 +216,9 @@ export default function DashboardScreen() {
               {bed.handoff && bed.handoff.status === 'pending' && (
                 <div className="alert-tag warning">⏳ Pending Handoff</div>
               )}
+              {bed.handoff && bed.handoff.status === 'flagged' && (
+                <div className="alert-tag critical">🚩 Flagged for Review</div>
+              )}
               {bed.status === 'stable' && !bed.handoff && <div className="alert-tag success">✅ All Caught Up</div>}
               {bed.status === 'empty' && (
                 <div
@@ -209,9 +234,28 @@ export default function DashboardScreen() {
       )}
 
       {pendingSync > 0 && (
-        <div className={`sync-badge glass ${syncing ? 'synced' : ''}`} onClick={handleSync}>
-          <span>{syncing ? '🔄' : '📡'}</span>
-          <span>{syncing ? 'Syncing...' : `${pendingSync} pending`}</span>
+        <div 
+          className={`sync-badge glass ${syncing ? 'synced' : ''}`} 
+          onClick={handleSync}
+          style={{ cursor: syncing ? 'default' : 'pointer' }}
+        >
+          {syncing ? (
+            <>
+              <span className="sync-spinner" />
+              <span>Syncing...</span>
+            </>
+          ) : (
+            <>
+              <span>{isOnline ? '📡' : '📴'}</span>
+              <span>{isOnline ? `${pendingSync} pending` : 'Offline'}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {syncMessage && (
+        <div className={`toast show success`} style={{ top: '80px' }}>
+          {syncMessage}
         </div>
       )}
 

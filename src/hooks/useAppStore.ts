@@ -24,6 +24,7 @@ interface Store {
   setOnline: (online: boolean) => void;
   setSyncing: (syncing: boolean) => void;
   setPendingSync: (count: number) => void;
+  setLastSyncAt: (timestamp: number) => void;
 }
 
 export const useAppStore = create<Store>((set) => ({
@@ -48,6 +49,7 @@ export const useAppStore = create<Store>((set) => ({
   setOnline: (online) => set({ isOnline: online }),
   setSyncing: (syncing) => set({ isSyncing: syncing }),
   setPendingSync: (count) => set({ pendingSyncCount: count }),
+  setLastSyncAt: (timestamp) => set({ lastSyncAt: timestamp }),
 }));
 
 if (typeof window !== 'undefined') {

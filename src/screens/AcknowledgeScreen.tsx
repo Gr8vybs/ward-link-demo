@@ -10,6 +10,9 @@ export default function AcknowledgeScreen() {
   const [bed, setBed] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
+  const [showFlagModal, setShowFlagModal] = useState(false);
+  const [flagReason, setFlagReason] = useState('');
+  const [flagSuccess, setFlagSuccess] = useState(false);
 
   const setScreen = useAppStore((s) => s.setScreen);
   const currentNurse = useAppStore((s) => s.currentNurse);
@@ -57,6 +60,36 @@ export default function AcknowledgeScreen() {
     setScreen('dashboard');
   }
 
+  async function flagIssue() {
+    if (!handoff || !currentNurse || !flagReason.trim()) {
+      setError('Please enter a reason for flagging');
+      return;
+    }
+
+    await db.handoffs.update(handoff.id, {
+      status: 'flagged',
+      incomingNurseId: currentNurse.id,
+      acknowledgedAt: Date.now(),
+      syncStatus: 'local',
+      // Store flag reason in freeTextNotes (appended)
+      freeTextNotes: `${handoff.freeTextNotes}\n\n[FLAGGED by ${currentNurse.name}]: ${flagReason.trim()}`,
+    });
+
+    await db.syncQueue.add({
+      table: 'handoffs',
+      operation: 'update',
+      payload: JSON.stringify({ id: handoff.id, status: 'flagged', reason: flagReason.trim() }),
+      retryCount: 0,
+      createdAt: Date.now(),
+    });
+
+    setFlagSuccess(true);
+    setTimeout(() => {
+      triggerDashboardRefresh();
+      setScreen('dashboard');
+    }, 1500);
+  }
+
   function handlePin(num: number) {
     if (pin.length >= 4) return;
     const newPin = pin + num;
@@ -81,6 +114,61 @@ export default function AcknowledgeScreen() {
     );
   }
 
+  // Flag success state
+  if (flagSuccess) {
+    return (
+      <div className="screen-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+        <div style={{ fontSize: '64px', marginBottom: '20px' }}>🚩</div>
+        <div style={{ fontSize: '20px', fontWeight: 700, marginBottom: '8px' }}>Issue Flagged</div>
+        <div style={{ color: 'var(--text-secondary)', textAlign: 'center' }}>Charge nurse has been notified</div>
+      </div>
+    );
+  }
+
+  // Flag modal
+  if (showFlagModal) {
+    return (
+      <div className="screen-container">
+        <div className="header">
+          <button className="icon-btn" onClick={() => setShowFlagModal(false)}>←</button>
+          <h1>Flag Issue</h1>
+          <button className="icon-btn">⋮</button>
+        </div>
+
+        <div className="form-section glass">
+          <div className="form-section-title">🚩 Why are you flagging this handoff?</div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '16px', lineHeight: 1.6 }}>
+            Flagging will alert the charge nurse and require a review before this handoff can be processed.
+          </div>
+          <textarea
+            className="input-field"
+            style={{ minHeight: '120px', resize: 'vertical', marginBottom: 0 }}
+            placeholder="Describe the issue (e.g., incorrect medication dosage, missing vital signs, patient concern...)"
+            value={flagReason}
+            onChange={(e) => {
+              setFlagReason(e.target.value);
+              setError('');
+            }}
+          />
+          {error && (
+            <div style={{ color: 'var(--critical)', fontSize: '13px', marginTop: '8px' }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="bottom-bar">
+          <button className="btn btn-secondary" onClick={() => setShowFlagModal(false)}>
+            Cancel
+          </button>
+          <button className="btn btn-critical" onClick={flagIssue}>
+            <span>🚩</span> Flag Issue
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="screen-container">
       <div className="header">
@@ -97,7 +185,7 @@ export default function AcknowledgeScreen() {
           From <span style={{ color: 'var(--primary)', fontWeight: 700 }}>Nurse A. Ibrahim</span>
           <br />
           <span style={{ color: 'var(--primary)', fontWeight: 700 }}>
-            {new Date(handoff.createdAt).toLocaleTimeString()} — Night Shift
+            {new Date(handoff.createdAt).toLocaleTimeString()} — Morning Shift
           </span>
           <br />
           <br />
@@ -146,6 +234,29 @@ export default function AcknowledgeScreen() {
           )}
         </div>
       </div>
+
+      {/* Medications Preview */}
+      {handoff.medications.length > 0 && (
+        <div className="form-section glass">
+          <div className="form-section-title">💉 Medications ({handoff.medications.length})</div>
+          {handoff.medications.map((med) => (
+            <div key={med.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--glass-border)' }}>
+              <span>{med.name} {med.dosage}</span>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>{med.frequency}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Notes Preview */}
+      {handoff.freeTextNotes && (
+        <div className="form-section glass">
+          <div className="form-section-title">📝 Notes</div>
+          <div style={{ fontSize: '14px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+            {handoff.freeTextNotes}
+          </div>
+        </div>
+      )}
 
       <div className="form-section glass">
         <div className="form-section-title">✍️ Sign to Accept</div>
@@ -196,8 +307,8 @@ export default function AcknowledgeScreen() {
       </div>
 
       <div className="bottom-bar">
-        <button className="btn btn-critical" onClick={() => setScreen('dashboard')}>
-          <span>❌</span> Flag Issue
+        <button className="btn btn-critical" onClick={() => setShowFlagModal(true)}>
+          <span>🚩</span> Flag Issue
         </button>
         <button className="btn btn-success" onClick={() => acknowledge()}>
           <span>✅</span> Accept

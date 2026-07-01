@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../hooks/useAppStore';
 import { db } from '../db/schema';
 import type { Patient, VitalSigns, Medication, Task, Alert, HandOff } from '../types';
 
 export default function HandoffScreen() {
-  // FIX: Read patientId from store since App.tsx doesn't pass it as a prop
   const patientId = useAppStore((s) => s.selectedPatientId);
   
   const [patient, setPatient] = useState<Patient | null>(null);
@@ -25,19 +24,71 @@ export default function HandoffScreen() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [notes, setNotes] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
   
+  // Voice note state
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
   const setScreen = useAppStore((s) => s.setScreen);
   const currentNurse = useAppStore((s) => s.currentNurse);
   const currentShift = useAppStore((s) => s.currentShift);
 
-  // Load patient data on mount
+  // Check for Web Speech API support
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setVoiceSupported(true);
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-NG';
+      
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let finalTranscript = '';
+        let interimTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+        
+        setVoiceTranscript((prev) => prev + finalTranscript);
+        if (interimTranscript) {
+          setNotes((prev) => {
+            const base = prev.replace(/\s*\[listening\.\.\.\]\s*$/, '');
+            return base + ' ' + interimTranscript + ' [listening...]';
+          });
+        }
+      };
+
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          alert('Microphone access denied. Please allow microphone access to use voice notes.');
+        }
+        setIsRecording(false);
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+        setNotes((prev) => prev.replace(/\s*\[listening\.\.\.\]\s*$/, '').trim());
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
   useEffect(() => {
     loadPatientData();
   }, [patientId]);
 
   async function loadPatientData() {
-    // FIX: Guard against invalid patientId before calling Dexie
     if (!patientId || patientId.trim() === '') {
       setPatient(null);
       setLoading(false);
@@ -53,7 +104,6 @@ export default function HandoffScreen() {
       }
       setPatient(p);
       
-      // Load previous handoff to carry forward medications and alerts
       const prev = await db.handoffs
         .where('patientId')
         .equals(patientId)
@@ -62,7 +112,7 @@ export default function HandoffScreen() {
       
       if (prev) {
         setPreviousHandoff(prev);
-        setMedications(prev.medications.map(m => ({ ...m, given: false }))); // Reset given status
+        setMedications(prev.medications.map(m => ({ ...m, given: false })));
         setAlerts(prev.alerts);
       }
     } catch (err) {
@@ -73,7 +123,27 @@ export default function HandoffScreen() {
     }
   }
 
-  // Auto-flag vitals based on normal ranges
+  const toggleVoiceRecording = useCallback(() => {
+    if (!voiceSupported) {
+      alert('Voice notes are not supported in this browser. Please use Chrome or Safari.');
+      return;
+    }
+
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      setIsRecording(false);
+    } else {
+      setVoiceTranscript('');
+      setNotes((prev) => prev.trim());
+      try {
+        recognitionRef.current?.start();
+        setIsRecording(true);
+      } catch (err) {
+        console.error('Failed to start recording:', err);
+      }
+    }
+  }, [isRecording, voiceSupported]);
+
   function getVitalStatus(type: keyof VitalSigns, value: string | number): 'normal' | 'warning' | 'critical' {
     if (type === 'bloodPressure' && typeof value === 'string') {
       const [sys, dia] = value.split('/').map(Number);
@@ -123,6 +193,8 @@ export default function HandoffScreen() {
   async function completeHandoff() {
     if (!patient || !currentNurse) return;
     
+    const cleanNotes = notes.replace(/\s*\[listening\.\.\.\]\s*$/, '').trim();
+    
     const handoff: HandOff = {
       id: crypto.randomUUID(),
       patientId: patient.id,
@@ -134,15 +206,14 @@ export default function HandoffScreen() {
       medications,
       tasks,
       alerts,
-      freeTextNotes: notes,
+      voiceNoteUrl: voiceTranscript || undefined,
+      freeTextNotes: cleanNotes,
       createdAt: Date.now(),
       syncStatus: 'local'
     };
     
-    // Save to IndexedDB
     await db.handoffs.add(handoff);
     
-    // Add to sync queue
     await db.syncQueue.add({
       table: 'handoffs',
       operation: 'create',
@@ -151,15 +222,12 @@ export default function HandoffScreen() {
       createdAt: Date.now()
     });
     
-    // Update pending sync count
     const count = await db.syncQueue.count();
     useAppStore.getState().setPendingSync(count);
     
-    // Return to dashboard
     setScreen('dashboard');
   }
 
-  // FIX: Show loading state instead of blank screen
   if (loading) {
     return (
       <div className="screen-container">
@@ -174,7 +242,6 @@ export default function HandoffScreen() {
     );
   }
 
-  // FIX: Show error state when no valid patient selected
   if (!patient) {
     return (
       <div className="screen-container">
@@ -296,12 +363,18 @@ export default function HandoffScreen() {
       {/* Tasks */}
       <div className="form-section glass">
         <div className="form-section-title">📋 Pending Tasks</div>
-        {tasks.map((task) => (
-          <div key={task.id} className="checkbox-item">
-            <div className="checkbox"></div>
-            <div style={{ fontWeight: 500 }}>{task.description}</div>
+        {tasks.length === 0 ? (
+          <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '12px' }}>
+            No tasks added yet.
           </div>
-        ))}
+        ) : (
+          tasks.map((task) => (
+            <div key={task.id} className="checkbox-item">
+              <div className="checkbox"></div>
+              <div style={{ fontWeight: 500 }}>{task.description}</div>
+            </div>
+          ))
+        )}
         <button 
           className="btn btn-secondary" 
           style={{ width: '100%', marginTop: '8px' }}
@@ -329,33 +402,40 @@ export default function HandoffScreen() {
       {/* Voice Notes */}
       <div className="form-section glass">
         <div className="form-section-title">🎤 Voice Note</div>
+        {!voiceSupported && (
+          <div style={{ color: 'var(--warning)', fontSize: '13px', marginBottom: '12px', textAlign: 'center' }}>
+            ⚠️ Voice notes not supported in this browser
+          </div>
+        )}
         <button 
           className={`voice-btn ${isRecording ? 'recording' : ''}`}
-          onClick={() => setIsRecording(!isRecording)}
+          onClick={toggleVoiceRecording}
+          disabled={!voiceSupported}
         >
           <span>{isRecording ? '⏹️' : '🎤'}</span>
-          {isRecording ? 'Recording... Tap to stop' : 'Tap to record note'}
+          {isRecording ? 'Recording... Tap to stop' : voiceSupported ? 'Tap to record note' : 'Not available'}
         </button>
-        {notes && (
+        {voiceTranscript && (
           <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', fontSize: '14px' }}>
-            {notes}
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '1px' }}>Transcript</div>
+            {voiceTranscript}
           </div>
         )}
       </div>
 
       {/* Notes Input */}
-      <div className="form-section glass">
+      <div className="form-section glass" style={{ marginBottom: '140px' }}>
         <div className="form-section-title">📝 Free Text Notes</div>
         <textarea
           className="input-field"
-          style={{ minHeight: '100px', resize: 'vertical' }}
-          placeholder="Enter any additional notes..."
+          style={{ minHeight: '100px', resize: 'vertical', marginBottom: 0 }}
+          placeholder="Enter any additional notes, or use voice note above..."
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
         />
       </div>
 
-      {/* Bottom Actions */}
+      {/* Bottom Actions - Fixed */}
       <div className="bottom-bar">
         <button className="btn btn-secondary" onClick={() => setScreen('dashboard')}>
           Cancel
@@ -366,4 +446,11 @@ export default function HandoffScreen() {
       </div>
     </div>
   );
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition: typeof SpeechRecognition;
+    webkitSpeechRecognition: typeof SpeechRecognition;
+  }
 }
