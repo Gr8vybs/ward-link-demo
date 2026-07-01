@@ -5,7 +5,6 @@ import { db, forceReseedDemoData } from '../db/schema';
 export default function SettingsScreen() {
   const [storageUsed, setStorageUsed] = useState(0);
   const [storageTotal, setStorageTotal] = useState(0);
-  const [syncCount, setSyncCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const [reseedMessage, setReseedMessage] = useState('');
@@ -29,7 +28,6 @@ export default function SettingsScreen() {
 
     const total = handoffs + patients + nurses + queue;
     setStorageUsed(total);
-    setSyncCount(queue);
 
     if ('storage' in navigator && 'estimate' in navigator.storage) {
       try {
@@ -81,7 +79,6 @@ export default function SettingsScreen() {
     try {
       await forceReseedDemoData();
       
-      // Update store state
       const queueCount = await db.syncQueue.count();
       useAppStore.getState().setPendingSync(queueCount);
       useAppStore.getState().setLastSyncAt(Date.now());
@@ -89,7 +86,6 @@ export default function SettingsScreen() {
       setReseedMessage('Demo data reset! ✅');
       setTimeout(() => setReseedMessage(''), 3000);
       
-      // Refresh dashboard if we go back
       triggerDashboardRefresh();
     } catch (err) {
       setReseedMessage('Reset failed ❌');
@@ -205,7 +201,6 @@ export default function SettingsScreen() {
         
         <div className="divider" />
         
-        {/* Reseed Demo Data Button */}
         <button 
           className="btn btn-secondary" 
           style={{ width: '100%', marginTop: '8px', marginBottom: '8px', color: 'var(--primary)' }}

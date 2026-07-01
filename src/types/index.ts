@@ -90,7 +90,7 @@ export interface BedStatus {
   bed: string;
   patient?: Patient;
   handoff?: HandOff;
-  status: 'critical' | 'warning' | 'stable' | 'empty';
+  status: 'critical' | 'warning' | 'stable' | 'empty' | 'flagged';
   alerts: Alert[];
   pendingTasks: number;
   lastHandoffAt?: number;

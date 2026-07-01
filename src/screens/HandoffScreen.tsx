@@ -7,7 +7,6 @@ export default function HandoffScreen() {
   const patientId = useAppStore((s) => s.selectedPatientId);
   
   const [patient, setPatient] = useState<Patient | null>(null);
-  const [previousHandoff, setPreviousHandoff] = useState<HandOff | null>(null);
   const [loading, setLoading] = useState(true);
   
   // Form state
@@ -29,7 +28,7 @@ export default function HandoffScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceSupported, setVoiceSupported] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<any>(null);
 
   const setScreen = useAppStore((s) => s.setScreen);
   const currentNurse = useAppStore((s) => s.currentNurse);
@@ -37,7 +36,7 @@ export default function HandoffScreen() {
 
   // Check for Web Speech API support
   useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SpeechRecognition) {
       setVoiceSupported(true);
       const recognition = new SpeechRecognition();
@@ -45,7 +44,7 @@ export default function HandoffScreen() {
       recognition.interimResults = true;
       recognition.lang = 'en-NG';
       
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
+      recognition.onresult = (event: any) => {
         let finalTranscript = '';
         let interimTranscript = '';
         
@@ -67,7 +66,7 @@ export default function HandoffScreen() {
         }
       };
 
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      recognition.onerror = (event: any) => {
         console.error('Speech recognition error:', event.error);
         if (event.error === 'not-allowed') {
           alert('Microphone access denied. Please allow microphone access to use voice notes.');
@@ -107,12 +106,11 @@ export default function HandoffScreen() {
       const prev = await db.handoffs
         .where('patientId')
         .equals(patientId)
-        .and(h => h.status === 'acknowledged')
+        .and((h: HandOff) => h.status === 'acknowledged')
         .last();
       
       if (prev) {
-        setPreviousHandoff(prev);
-        setMedications(prev.medications.map(m => ({ ...m, given: false })));
+        setMedications(prev.medications.map((m: Medication) => ({ ...m, given: false })));
         setAlerts(prev.alerts);
       }
     } catch (err) {
@@ -446,11 +444,4 @@ export default function HandoffScreen() {
       </div>
     </div>
   );
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition: typeof SpeechRecognition;
-    webkitSpeechRecognition: typeof SpeechRecognition;
-  }
 }
